@@ -30,7 +30,7 @@ plugin during setup.
 
 ## Automated tests
 
-21 tests pass with Python 3.9.6 and ResourceWarning treated as errors:
+27 tests pass with Python 3.9.6 and ResourceWarning treated as errors:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -W error::ResourceWarning -m unittest discover -s tests-codex -v
@@ -64,8 +64,9 @@ is a bounded source review, not a guarantee about Claude's runtime dependencies.
 None of that adapter or CI is executed by Codex Cache. The new runtime uses the
 Python standard library, no shell=True, no eval, no external Python/npm package,
 no transcript parser, no API key, no credential read and no remote telemetry.
-Its only subprocesses are its own detached Python scheduler and the Desktop's
-bundled `codex app-server proxy`. Hook command paths are quoted. Input IDs are
+Its only runtime subprocess is its own detached Python scheduler. It connects
+to an existing private same-user Unix socket directly, using the documented
+WebSocket protocol; it never starts an App Server. Hook command paths are quoted. Input IDs are
 validated UUIDs; SQLite parameters are bound. Only lifecycle/usage metadata is
 stored; prompt/message text is discarded. Config backup and generated package
 are gitignored. Installer stages an allowlisted package, so user config backups
@@ -92,3 +93,29 @@ and .git are not copied into the installed plugin.
    and fresh native usage before another timer may compact.
 8. Sleep/wake/offline can delay a wall-clock deadline. No warm-cache guarantee,
    exact expiry, token savings or price savings are claimed.
+
+## Follow-up after hook approval
+
+The user approved all seven hooks; hooks/list confirmed each as trusted. The
+Desktop shared socket was still absent. The installed application startup logic
+was inspected read-only and confirmed the nonempty-config-override gate described
+in issue #41014. No application bundle or signing/security checks were changed.
+
+An isolated native transport probe exposed a defect missed by mocked 0.1.0
+adapter tests: `app-server proxy` relays raw bytes and does not translate JSONL.
+Fixed in 0.1.1 with a minimal standards-based Unix WebSocket client. Six additional
+protocol tests cover text fragmentation across UTF-8 boundaries, ping/pong,
+masked client frame lengths, invalid/oversized frames, close/EOF, private
+same-user socket checks and HTTP handshake validation. All 27 tests pass.
+
+`scripts/probe_shared_transport.py` starts a temporary independent CODEX_HOME
+and a temporary Unix listener. Two simultaneous clients successfully initialize
+and call thread/loaded/list, both seeing no loaded threads. No thread is created,
+read or resumed, and no model turn is submitted. The test server is terminated
+and its temporary state removed. This is transport verification, not Desktop
+end-to-end verification. The initial failed JSONL probe timed out; its test
+server exited and generated temporary state was subsequently cleaned up.
+
+The source update is installed as 0.1.1 and requires hook re-review under Codex's
+hash-based trust rules. The user's approval of 0.1.0 was not overwritten or
+copied to the new definition. No conversation was enabled by this update.

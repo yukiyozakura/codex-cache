@@ -73,7 +73,7 @@ restart it on resume/Stop. It is not a LaunchAgent and does not keep a Mac awake
 
 ## Native transport and telemetry
 
-Only `codex app-server proxy` to an **existing** App Server is used. No daemon
+Only the documented Unix WebSocket transport to an **existing** App Server is used. No daemon
 bootstrap, remote-control enablement, second-server resume, UI keystrokes or
 private Desktop socket protocol is used by the runtime adapter.
 
@@ -143,6 +143,25 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/inspect_runtime.py
 The second command starts a separate **read-only diagnostic** stdio server for
 hooks/list and skills/list. It never creates, resumes or compacts a thread and
 is explicitly not a Desktop live-session test. See [VALIDATION.md](VALIDATION.md).
+
+## Desktop connection investigation (0.1.1)
+
+All seven original hooks were confirmed trusted after the user's review. A
+subsequent isolated transport test found a 0.1.0 adapter bug: `app-server proxy`
+is a raw byte relay, not a JSONL-to-WebSocket bridge. Version 0.1.1 implements
+HTTP Upgrade plus masked WebSocket frames over a private same-user Unix socket.
+A real isolated server accepted two simultaneous clients; no model turns were
+submitted. Fragmentation, ping/pong, handshake validation and frame limits are
+covered by tests. The installed hook script change requires a new Codex review.
+
+This fixes the adapter, **not Desktop's missing shared connection**. The current
+installed Desktop has an internal `CODEX_APP_SERVER_USE_LOCAL_DAEMON` path, but
+its normal app-tools config override prevents that branch from being selected.
+An internal WebSocket endpoint override also exists; forcing it can make the
+app's chat-management/automation connector unavailable. No environment override,
+Desktop process restart, app patch, security-check bypass or remote-login change
+was applied. See [DESKTOP-CONNECTION.md](DESKTOP-CONNECTION.md) for evidence and
+alternatives. The runtime remains OFF by default and fail-closed.
 
 ## Sources
 

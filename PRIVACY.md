@@ -6,7 +6,7 @@ Codex plugin data directory. It does not read auth.json, keychains, environment
 credentials or transcript contents. Hook payload prompt/message text is discarded.
 
 OFF threads cause no network/model call, state write or scheduler startup.
-Opted-in scheduling uses only local IPC through Codex's existing-server proxy.
+Opted-in scheduling uses only local IPC through Codex's existing-server Unix WebSocket transport.
 Native compaction is performed by Codex using its own existing authentication;
 that operation may send the conversation to its configured provider and incur
 usage. This plugin has no telemetry, remote backend or API-key setup.

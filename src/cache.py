@@ -224,27 +224,123 @@ def hook(store, e, now=None):
     return output
 
 
+class UnixWebSocket:
+    """Minimal RFC 6455 text client for Codex's private local Unix socket.
+
+    No extensions/compression are offered; supports fragmented text and ping/pong.
+    Only same-user sockets with private permissions are accepted. No TCP listener.
+    """
+    LIMIT = 16 * 1024 * 1024
+
+    @classmethod
+    async def connect(cls, path):
+        import base64
+        import hashlib
+        import stat
+        path = Path(path)
+        if not path.is_absolute(): raise ValueError('App Server socket path must be absolute')
+        metadata = path.stat()
+        if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+            raise ValueError('App Server socket must be private and owned by this user')
+        reader, writer = await asyncio.open_unix_connection(str(path), limit=16384)
+        try:
+            key = base64.b64encode(os.urandom(16)).decode('ascii')
+            writer.write(('GET /rpc HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n'
+                          'Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
+                          'Sec-WebSocket-Key: ' + key + '\r\n\r\n').encode('ascii'))
+            await writer.drain()
+            header = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), timeout=8)
+            if len(header) > 8192: raise ValueError('oversized WebSocket handshake')
+            lines = header.decode('ascii').split('\r\n')
+            fields = dict(line.split(':', 1) for line in lines[1:] if ':' in line)
+            fields = {k.lower(): v.strip() for k, v in fields.items()}
+            expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode('ascii')).digest()).decode('ascii')
+            if (lines[0].split(' ')[:2] != ['HTTP/1.1', '101'] or
+                fields.get('sec-websocket-accept') != expected or
+                fields.get('upgrade', '').lower() != 'websocket' or
+                'upgrade' not in [v.strip().lower() for v in fields.get('connection', '').split(',')] or
+                'sec-websocket-extensions' in fields or 'sec-websocket-protocol' in fields):
+                raise ValueError('invalid or unsolicited WebSocket handshake')
+            self = cls()
+            self.reader, self.writer = reader, writer
+            return self
+        except BaseException:
+            writer.close()
+            with contextlib.suppress(Exception): await writer.wait_closed()
+            raise
+
+    def frame(self, opcode, payload):
+        import struct
+        if len(payload) > self.LIMIT: raise ValueError('oversized WebSocket message')
+        n = len(payload)
+        length = bytes([0x80 | n]) if n < 126 else (b'\xfe' + struct.pack('!H', n) if n < 65536 else b'\xff' + struct.pack('!Q', n))
+        mask = os.urandom(4)
+        self.writer.write(bytes([0x80 | opcode]) + length + mask + bytes(v ^ mask[i % 4] for i, v in enumerate(payload)))
+
+    def send(self, text):
+        self.frame(1, text.encode('utf-8'))
+
+    async def receive(self):
+        import struct
+        parts, size, fragmented = [], 0, False
+        while True:
+            try: head = await self.reader.readexactly(2)
+            except asyncio.IncompleteReadError: return None
+            fin, opcode, length = bool(head[0] & 0x80), head[0] & 15, head[1] & 127
+            if head[0] & 0x70 or head[1] & 0x80: raise ValueError('unsupported WebSocket server frame')
+            if length == 126: length = struct.unpack('!H', await self.reader.readexactly(2))[0]
+            elif length == 127: length = struct.unpack('!Q', await self.reader.readexactly(8))[0]
+            if length > self.LIMIT or size + length > self.LIMIT: raise ValueError('oversized WebSocket message')
+            if opcode >= 8 and (not fin or length > 125): raise ValueError('invalid WebSocket control frame')
+            payload = await self.reader.readexactly(length)
+            if opcode == 8:
+                if len(payload) == 1: raise ValueError('invalid WebSocket close frame')
+                self.frame(8, payload)
+                return None
+            if opcode == 9:
+                self.frame(10, payload)
+                continue
+            if opcode == 10: continue
+            if opcode not in (0, 1) or (opcode == 0) != fragmented:
+                raise ValueError('invalid WebSocket text continuation')
+            parts.append(payload)
+            size += length
+            if fin: return b''.join(parts).decode('utf-8')
+            fragmented = True
+
+    async def close(self):
+        if not self.writer.is_closing():
+            with contextlib.suppress(Exception):
+                self.frame(8, b'\x03\xe8')
+                await self.writer.drain()
+            self.writer.close()
+        with contextlib.suppress(Exception): await self.writer.wait_closed()
+
+
 class Native:
-    """Only proxies an EXISTING server. Never starts a second App Server."""
-    def __init__(self, on_event):
+    """Connect to an EXISTING server's documented Unix WebSocket transport."""
+    def __init__(self, on_event, socket_path=None):
         self.on_event, self.seq, self.waiters = on_event, 0, {}
-        self.proc = None
+        self.proc, self.ws, self.socket_path = None, None, socket_path
 
     async def connect(self):
-        self.proc = await asyncio.create_subprocess_exec(DESKTOP_CODEX, 'app-server', 'proxy',
-                          stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                          stderr=asyncio.subprocess.DEVNULL, limit=16 * 1024 * 1024)
+        home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+        path = self.socket_path or str(home / 'app-server-control/app-server-control.sock')
+        self.ws = await UnixWebSocket.connect(path)
         self.reader = asyncio.create_task(self.read())
         r = await self.call('initialize', dict(clientInfo=dict(name='codex_cache', version='0.1.0')))
         self.send(dict(method='initialized', params={}))
         return r
 
     def send(self, msg):
-        self.proc.stdin.write((json.dumps(msg) + '\n').encode())
+        if self.ws: self.ws.send(json.dumps(msg))
+        else: self.proc.stdin.write((json.dumps(msg) + '\n').encode())
 
     async def read(self):
         try:
-            while line := await self.proc.stdout.readline():
+            while True:
+                line = await self.ws.receive() if self.ws else await self.proc.stdout.readline()
+                if not line: break
                 msg = json.loads(line)
                 if 'id' in msg and ('result' in msg or 'error' in msg):
                     f = self.waiters.pop(msg['id'], None)
@@ -258,20 +354,23 @@ class Native:
                     self.on_event(msg)
         finally:
             for f in list(self.waiters.values()):
-                if not f.done(): f.set_exception(RuntimeError('shared App Server proxy disconnected'))
+                if not f.done(): f.set_exception(RuntimeError('shared App Server disconnected'))
             self.waiters.clear()
 
     async def call(self, method, params):
         self.seq += 1
         f = asyncio.get_running_loop().create_future()
         self.waiters[self.seq] = f
-        self.send(dict(id=self.seq, method=method, params=params))
         try:
+            self.send(dict(id=self.seq, method=method, params=params))
             return await asyncio.wait_for(f, timeout=8)
         finally:
             self.waiters.pop(self.seq, None)
 
     async def close(self):
+        if self.ws:
+            await self.ws.close()
+            await self.reader
         if self.proc:
             if self.proc.returncode is None:
                 self.proc.terminate()
@@ -407,7 +506,7 @@ async def scheduler(store):
                     subscribed.add(tid)
                 result = await compact_candidate(store, api, tid)
                 store.change(tid, lambda x: x.update(blockedReason=result))
-            store.runtime(dict(pid=os.getpid(), heartbeatAt=time.time(), transport='existing-server-proxy', connected=True))
+            store.runtime(dict(pid=os.getpid(), heartbeatAt=time.time(), transport='existing-server-unix-websocket', connected=True))
         except Exception as ex:
             if api:
                 with contextlib.suppress(Exception): await api.close()
