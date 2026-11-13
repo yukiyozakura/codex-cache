@@ -1,67 +1,13 @@
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
-
+name: Codex Cache
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
-
 jobs:
-  plugin:
-    name: Plugin (Claude Code ${{ matrix.claude-code }})
+  policy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        # The pinned build is the one cachekeeper is tested against. `latest`
-        # warns early when the plugin API moves; it does not block a merge.
-        claude-code: ['2.1.310', 'latest']
-    continue-on-error: ${{ matrix.claude-code == 'latest' }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-
-      - name: Install Claude Code
-        run: |
-          npm install -g @anthropic-ai/claude-code@${{ matrix.claude-code }}
-          claude --version
-          echo "CLAUDE_CONFIG_DIR=$RUNNER_TEMP/claude-config" >> "$GITHUB_ENV"
-
-      - name: Validate manifest and hooks module
-        run: |
-          claude plugin validate . --json > "$RUNNER_TEMP/validate.json" || true
-          python3 -I scripts/check_validate.py "$RUNNER_TEMP/validate.json"
-
-      - name: Load the plugin headless
-        run: claude -p --plugin-dir . "/cache" < /dev/null
-
-      # Claude Code writes the plugin API declarations to .claude-plugin/types/ when an interactive
-      # session starts; from 2.1.310 a -p run no longer does. The session needs a terminal and a
-      # sign-in, so it runs under script(1) with a placeholder key. No step calls the model.
-      - name: Write the plugin API types
-        env:
-          ANTHROPIC_API_KEY: sk-ant-ci-placeholder-no-model-calls-0000
-        run: |
-          mkdir -p "$CLAUDE_CONFIG_DIR"
-          printf '{"hasCompletedOnboarding":true,"theme":"dark","customApiKeyResponses":{"approved":["%s"]},"projects":{"%s":{"hasTrustDialogAccepted":true}}}' \
-            "${ANTHROPIC_API_KEY: -20}" "$PWD" > "$CLAUDE_CONFIG_DIR/.claude.json"
-          sleep 120 | script -qfec 'claude --plugin-dir .' /dev/null > "$RUNNER_TEMP/session.log" 2>&1 &
-          for _ in $(seq 1 60); do
-            test -f .claude-plugin/types/claude-code/index.d.ts && break
-            sleep 1
-          done
-          pkill -f 'claude --plugin-dir' || true
-          test -f .claude-plugin/types/claude-code/index.d.ts || { tail -c 4000 "$RUNNER_TEMP/session.log"; exit 1; }
-
-      - name: Type-check
-        run: npx -y -p typescript@5 tsc -p .
-
-      - name: Test
-        run: claude plugin test .
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests-codex -v

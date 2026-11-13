@@ -1,0 +1,11 @@
+Codex Cache is a Codex-native adaptation of cachekeeper / claude-cache.
+Upstream: https://github.com/the-cybersapien/claude-cache
+Upstream author: Aditya Aggarwal (the-cybersapien).
+Reference revision: af2b6c523fb7f7b00024430bfb13bab921981a48 (v0.3.1).
+Upstream is licensed under Apache License 2.0; see LICENSE.
+
+Modified November 2026: replaced the Claude runtime adapter with Codex lifecycle
+hooks, a persistent opt-in registry, generation-based scheduling, and the native
+Codex App Server adapter. Original source retained under upstream/ for review;
+it is never loaded or executed by this plugin. UX and compaction policy derive
+from upstream; Claude cache TTL inference, AFK tools and UI are not enabled.

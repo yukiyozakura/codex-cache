@@ -1,0 +1,6 @@
+{
+  "name": "codex-cache-local",
+  "interface": {"displayName": "Codex Cache Local"},
+  "plugins": [{"name": "codex-cache", "source": {"source": "local", "path": "./dist/plugin"},
+    "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Developer Tools"}]
+}

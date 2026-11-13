@@ -1,2 +1,6 @@
 .claude-plugin/types/
 node_modules/
+__pycache__/
+*.pyc
+local-setup/
+dist/

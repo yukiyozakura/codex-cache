@@ -1,0 +1,5 @@
+{
+  "autoCompactDefault": "off",
+  "compactAfterMinutes": 55,
+  "minContextPercent": 20
+}
