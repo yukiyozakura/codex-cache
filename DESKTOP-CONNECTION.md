@@ -1,3 +1,7 @@
+> Version 0.2.0 adds an alternative alert mode: 50 minutes idle, then a native
+> Mac reminder every minute. It needs no shared App Server and preserves the
+> normal Desktop environment. The findings below still apply to auto-compaction.
+
 # Desktop connection follow-up — 2026-11-13
 
 ## Current outcome

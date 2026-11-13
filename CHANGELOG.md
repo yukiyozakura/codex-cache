@@ -1,3 +1,12 @@
+# 0.2.0 — Native idle reminders
+
+- Default action mode is alert: 50 idle minutes, then repeat every minute.
+- Explicit per-thread opt-in remains required; new chats/workers stay OFF.
+- Activity/OFF cancels repeats; wake does not replay missed notifications.
+- Native macOS UserNotifications helper, permission/status/test actions.
+- No Desktop backend switch, model/network call or context gate in alert mode.
+- Retain legacy compact mode separately; it remains blocked for normal Desktop.
+
 # 0.1.1 — Correct native Unix WebSocket transport
 
 - Replace mistaken JSONL-over-proxy assumption with real HTTP Upgrade and

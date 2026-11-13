@@ -16,7 +16,8 @@ import subprocess
 import sys
 import time
 
-DEFAULTS = dict(autoCompactDefault='off', compactAfterMinutes=55, minContextPercent=20)
+DEFAULTS = dict(autoCompactDefault='off', compactAfterMinutes=55, minContextPercent=20,
+                actionMode='alert', alertAfterMinutes=50, alertRepeatMinutes=1)
 HOOK_EVENTS = {'SessionStart', 'UserPromptSubmit', 'Stop', 'Interrupt', 'PreCompact', 'PostCompact', 'SessionEnd'}
 DESKTOP_CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'
 IDENTITY = re.compile(r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
@@ -35,6 +36,7 @@ def fresh(tid):
                 lastActivityAt=None, dueAt=None, running=True, turnId=None,
                 compactedActivity=None, attemptedActivity=None, pending=None,
                 manual=False, adoptStop=False, usage=None, lastCompact=None, hookCount=0,
+                alertCount=0, lastAlert=None, alertPending=None, conversationLabel=None,
                 blockedReason='not-opted-in')
 
 
@@ -100,7 +102,10 @@ class Store:
         cfg = {**DEFAULTS, **(json.loads(path.read_text()) if path.exists() else {})}
         if cfg['autoCompactDefault'] != 'off':
             raise ValueError('autoCompactDefault must remain off; opt-in is required per thread')
-        for key, low, high in [('compactAfterMinutes', 0.01, 1440), ('minContextPercent', 0, 100)]:
+        if cfg['actionMode'] not in ('alert', 'compact'):
+            raise ValueError('actionMode must be alert or compact')
+        for key, low, high in [('compactAfterMinutes', 0.01, 1440), ('minContextPercent', 0, 100),
+                               ('alertAfterMinutes', 0.01, 1440), ('alertRepeatMinutes', 0.01, 1440)]:
             v = cfg[key]
             if isinstance(v, bool) or not isinstance(v, (float, int)) or not math.isfinite(v) or not low <= v <= high:
                 raise ValueError('invalid setting: ' + key)
@@ -111,14 +116,16 @@ def invalidate(s):
     s['generation'] += 1
     s['dueAt'] = None
     s['usage'] = None
+    s['alertPending'] = None
     # Retain an outstanding claim so PreCompact can veto a delayed request.
 
 
 def arm(s, cfg, now):
     s['running'] = False
     s['lastActivityAt'] = now
-    if (s['enabled'] or s['manual']) and s['activity'] > 0 and s['compactedActivity'] != s['activity'] and s['attemptedActivity'] != s['activity']:
-        s['dueAt'] = now if s['manual'] else now + cfg['compactAfterMinutes'] * 60
+    if (s['enabled'] or s['manual']) and s['activity'] > 0 and s['compactedActivity'] != s['activity'] and (cfg['actionMode'] == 'alert' or s['attemptedActivity'] != s['activity']):
+        minutes = cfg['alertAfterMinutes'] if cfg['actionMode'] == 'alert' else cfg['compactAfterMinutes']
+        s['dueAt'] = now if s['manual'] else now + minutes * 60
         s['blockedReason'] = 'waiting-idle-deadline'
 
 
@@ -463,11 +470,68 @@ async def daemon(store):
         await scheduler(store)
 
 
+def alert_blocker(s, now):
+    if not s['enabled']: return 'not-opted-in'
+    if s['running']: return 'thread-running'
+    if s['activity'] <= 0: return 'awaiting-user-activity'
+    if s['compactedActivity'] == s['activity']: return 'already-compacted-this-idle-stretch'
+    if s['dueAt'] is None or now < s['dueAt']: return 'waiting-alert-deadline'
+    return None
+
+
+async def alert_candidate(store, tid, now=None, notifier=None):
+    now = time.time() if now is None else now
+    cfg, snapshot = store.settings(), store.get(tid)
+    if cfg['actionMode'] != 'alert': return 'not-alert-mode'
+    why = alert_blocker(snapshot, now)
+    if why: return why
+    generation = snapshot['generation']
+    def claim(s):
+        why = alert_blocker(s, now)
+        if why or s['generation'] != generation: return why or 'stale-generation'
+        s['alertPending'] = dict(generation=generation, activity=s['activity'], at=now)
+        # One future deadline, never replay a backlog after sleep/wake or downtime.
+        s['dueAt'] = now + cfg['alertRepeatMinutes'] * 60
+        return None
+    why = store.change(tid, claim)
+    if why: return why
+    def submit():
+        current = store.get(tid)
+        if current['generation'] != generation or current['running'] or not current['enabled']:
+            return dict(error='stale-alert-cancelled')
+        send = notifier
+        if send is None:
+            from notifier import send_alert
+            send = send_alert
+        idle = max(0, (now - current['lastActivityAt']) / 60)
+        return send(tid, current.get('conversationLabel') or tid[:8], idle)
+    result = await asyncio.to_thread(submit)
+    reason = 'alert-submitted-waiting-repeat' if result.get('accepted') else result.get('error', 'notification-failed')
+    def finish(s):
+        if s['generation'] != generation: return
+        s['alertPending'] = None
+        s['lastAlert'] = dict(at=now, generation=generation, result=result)
+        s['alertCount'] = s.get('alertCount', 0) + int(bool(result.get('accepted')))
+        s['blockedReason'] = reason
+    store.change(tid, finish)
+    return reason
+
+
 async def scheduler(store):
     api, subscribed, epoch, retry_at = None, set(), 0, 0
     while any(s['enabled'] or s['manual'] for s in store.all()):
         try:
             cfg = store.settings()
+            if cfg['actionMode'] == 'alert':
+                if api:
+                    await api.close()
+                    api, subscribed = None, set()
+                for s in store.all():
+                    if s['enabled']: await alert_candidate(store, s['threadId'])
+                store.runtime(dict(pid=os.getpid(), heartbeatAt=time.time(), mode='alert',
+                    connected=False, notificationBackend='macos-UserNotifications'))
+                await asyncio.sleep(2)
+                continue
             if api is None:
                 if time.monotonic() < retry_at:
                     await asyncio.sleep(2)
@@ -532,18 +596,22 @@ def status(store, tid):
     runtime = store.runtime() if store.path.exists() else {}
     cfg = store.settings()
     reason = s['blockedReason']
-    if s['enabled'] or s['manual']:
+    if cfg['actionMode'] == 'compact' and (s['enabled'] or s['manual']):
         if not runtime.get('connected') or time.time() - runtime.get('heartbeatAt', 0) > 45:
             reason = 'shared-App-Server-unreachable'
     return dict(s, settings=cfg, contextPercent=context_percent(s),
                 blockedReason=reason, runtime=runtime, dataDirectory=str(store.root),
+                actionMode=cfg['actionMode'], contextGateApplied=cfg['actionMode'] == 'compact',
                 cacheWarm=None, cacheExpiresAt=None, cacheTimer='idle-policy-heuristic; not TTL detection')
 
 
-def control(store, tid, command):
-    store.settings()
+def control(store, tid, command, label=None):
+    cfg = store.settings()
+    if command == 'compact' and cfg['actionMode'] == 'alert':
+        raise ValueError('Alert mode does not compact. Use Desktop manual compaction.')
     def update(s):
         if command == 'on':
+            if label is not None: s['conversationLabel'] = label.strip()[:80] or None
             if not s['enabled']:
                 invalidate(s)
                 s['enabled'] = True
@@ -568,6 +636,9 @@ def control(store, tid, command):
 
 
 async def doctor(tid):
+    if Store(data_dir()).settings()['actionMode'] == 'alert':
+        from notifier import call
+        return dict(mode='alert', notificationSettings=await asyncio.to_thread(call, 'status'), nativeServerRequired=False)
     api = Native(lambda msg: None)
     try:
         await api.connect()
@@ -582,10 +653,15 @@ async def doctor(tid):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['on', 'off', 'status', 'compact', 'hook', 'daemon', 'doctor'])
+    parser.add_argument('command', choices=['on', 'off', 'status', 'compact', 'hook', 'daemon', 'doctor', 'test'])
+    parser.add_argument('--label', default=None)
     args = parser.parse_args()
     os.umask(0o077)
     store = Store(data_dir())
+    if args.command == 'test':
+        from notifier import call
+        print(json.dumps(call('test'), indent=2))
+        return
     if args.command == 'hook':
         e = json.load(sys.stdin)
         # Cap handling to known events; never store prompts, messages or transcripts.
@@ -604,7 +680,7 @@ def main():
     if not IDENTITY.fullmatch(tid): raise ValueError('CODEX_THREAD_ID is unavailable; refusing to select another conversation')
     if args.command in ('on', 'off', 'compact'):
         store = Store(data_dir(), create=True)
-        control(store, tid, args.command)
+        control(store, tid, args.command, args.label)
         # Stop hook starts the scheduler, after capturing this turn's identity.
     result = status(store, tid)
     if args.command == 'doctor': result['transportProbe'] = asyncio.run(doctor(tid))

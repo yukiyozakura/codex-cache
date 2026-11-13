@@ -1,5 +1,8 @@
 {
   "autoCompactDefault": "off",
   "compactAfterMinutes": 55,
-  "minContextPercent": 20
+  "minContextPercent": 20,
+  "actionMode": "alert",
+  "alertAfterMinutes": 50,
+  "alertRepeatMinutes": 1
 }

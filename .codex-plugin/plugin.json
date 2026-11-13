@@ -1,12 +1,12 @@
 {
   "name": "codex-cache",
-  "version": "0.1.1",
-  "description": "Explicit per-conversation idle compaction. New conversations are always OFF.",
+  "version": "0.2.0",
+  "description": "Opt-in idle reminders for long Codex conversations: notify after 50 minutes, repeat every minute.",
   "license": "Apache-2.0",
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Codex Cache",
-    "shortDescription": "Opt-in idle compaction for long conversations"
+    "shortDescription": "Opt-in idle reminders for long conversations"
   },
   "repository": "https://github.com/yukiyozakura/codex-cache"
 }

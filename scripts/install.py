@@ -11,6 +11,15 @@ import sys
 root = Path(__file__).resolve().parents[1]
 home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
 codex = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'
+helper_app = Path.home() / 'Applications/Codex Cache Alerts.app'
+helper_binary = helper_app / 'Contents/MacOS/CodexCacheAlerts'
+if not helper_binary.is_file():
+    subprocess.run(['/usr/bin/python3', str(root/'scripts/build_alerts.py')], check=True)
+else:
+    import plistlib
+    with (helper_app/'Contents/Info.plist').open('rb') as f:
+        if plistlib.load(f).get('CFBundleIdentifier') != 'io.github.yukiyozakura.codex-cache-alerts':
+            raise RuntimeError('unexpected notification helper identity')
 # Install an allowlisted runtime package, excluding .git, local config backups,
 # test artifacts, original Claude adapters, and unrelated developer material.
 package = root / 'dist' / 'plugin'
@@ -37,5 +46,8 @@ for args in [['plugin', 'marketplace', 'add', str(root), '--json'],
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(root / 'src'))
 import cache
-cache.Store(cache.data_dir(), create=True)  # defaults only, zero opted-in threads
+store = cache.Store(cache.data_dir(), create=True)  # never enables a thread
+settings = store.root/'settings.json'
+settings.write_text(json.dumps({**cache.DEFAULTS, **json.loads(settings.read_text())}, indent=2)+'\n')
 print('Installed. Review Codex Cache in Desktop Settings > Hooks; restart Desktop to reload the plugin.')
+print('Notification permission: Codex Cache Alerts in macOS System Settings > Notifications.')

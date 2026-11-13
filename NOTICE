@@ -9,3 +9,7 @@ hooks, a persistent opt-in registry, generation-based scheduling, and the native
 Codex App Server adapter. Original source retained under upstream/ for review;
 it is never loaded or executed by this plugin. UX and compaction policy derive
 from upstream; Claude cache TTL inference, AFK tools and UI are not enabled.
+
+Version 0.2.0 adds locally built macOS idle reminders (50 minutes, repeat every
+minute) using public UserNotifications APIs. The new native helper is original
+code distributed under the same Apache-2.0 license.

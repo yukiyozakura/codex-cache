@@ -32,6 +32,7 @@ class PolicyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = c.Store(self.tmp.name, create=True)
+        (Path(self.tmp.name)/'settings.json').write_text(json.dumps(dict(c.DEFAULTS, actionMode='compact')))
     def tearDown(self): self.tmp.cleanup()
     def event(self, name, tid=A, turn='t1', now=100, **kw):
         return c.hook(self.store, dict(session_id=tid, hook_event_name=name, turn_id=turn, **kw), now)
@@ -168,7 +169,7 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(s['usage'])
     def test_one_minute_configuration_and_reject_global_on(self):
         path=Path(self.tmp.name)/'settings.json'
-        path.write_text(json.dumps(dict(c.DEFAULTS,compactAfterMinutes=1)))
+        path.write_text(json.dumps(dict(c.DEFAULTS,compactAfterMinutes=1,actionMode='compact')))
         self.ready()
         self.assertEqual(self.store.get(A)['dueAt'],170)
         path.write_text(json.dumps(dict(c.DEFAULTS,autoCompactDefault='on')))

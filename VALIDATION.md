@@ -1,3 +1,60 @@
+# Current result — 0.2.0 idle reminders
+
+The user selected the normal Desktop environment and then requested an idle
+alert alternative: first notification after 50 minutes, repeating every minute.
+Version 0.2.0 implements and installs that mode, retaining explicit per-thread
+opt-in and default OFF. No Desktop backend/connection override is required or
+applied. Context gating and automatic compaction are not used in alert mode.
+
+## Verified on this Mac
+
+- Native helper built from `native/Alerts.swift` with Apple's Swift compiler and
+  public AppKit/UserNotifications APIs; ad-hoc signed and installed under the
+  user's Applications directory. No external package or AppleScript is used.
+- Permission requested through the public API and confirmed `authorized`, with
+  sound enabled. No OS permission database was edited.
+- A direct test notification was present in macOS's delivered-notification list.
+- Real shortened timer test: first accepted notification at 60.51 seconds;
+  second at 120.54 seconds; recorded submission interval 60.24 seconds. The
+  repeated notification was present in macOS's delivered list. OFF stopped the
+  test scheduler cleanly. This used only a synthetic UUID in a temporary
+  registry; no real conversation was opted in, no model turn was submitted and
+  no App Server was contacted. The 50-minute threshold is tested with virtual
+  time rather than a 50-minute wall-clock wait.
+- 39 automated tests pass, including the new 12 reminder-policy tests for 50/1
+  timing, activity reset, OFF, wake/no backlog, permission failure, isolation,
+  stale generation, resume, context-independent operation and refusing native
+  compact in alert mode, plus 27 retained compact/transport checks.
+- Official plugin CLI reports 0.2.0 installed/enabled. skills/list discovers the
+  updated skill. hooks/list discovers seven hooks without errors/warnings, each
+  `modified` pending the user's new review after this script update.
+- Existing Codex config is backed up. The current setup conversation remains
+  OFF. Actual settings are actionMode=alert, alertAfterMinutes=50,
+  alertRepeatMinutes=1, autoCompactDefault=off. Legacy compact 55/20 settings
+  remain stored but are not applied to alerts.
+
+## Remaining user steps and limits
+
+Review/trust the seven updated hooks, then explicitly enable each desired
+conversation using `$codex-cache:cache on` (optionally `on Lead`). No session
+picker is used. A live Desktop conversation's hook-to-timer path remains to be
+observed after that opt-in; a separate diagnostic discovery response does not
+prove live hook execution. The actual timer-to-Mac-notification path has been
+verified with the temporary-registry test above.
+
+OS acceptance/delivered-list presence is not proof that a person saw a banner or
+heard sound. Focus and notification settings apply. Submission timing has a
+roughly two-second polling granularity; sleep delays it without replaying a
+backlog. An already-submitting notice can race a user event; later repeats are
+cancelled by the generation check. User activity/OFF stops future reminders.
+A resume retains opt-in but waits for the next completed turn to rearm.
+
+The following sections are historical compact-adapter investigation, not a claim
+that auto-compaction is operational. Native auto-compaction remains blocked for
+normal Desktop chats; the current alternative is notification-only.
+
+---
+
 # Validation and audit — 2026-11-13 (JST)
 
 ## Result

@@ -1,176 +1,167 @@
-# Codex Cache — Desktop adapter MVP
+# Codex Cache — opt-in idle reminders for Codex Desktop
 
-Explicit per-conversation idle compaction, adapted from
-[the-cybersapien/claude-cache](https://github.com/the-cybersapien/claude-cache)
-(Apache-2.0, Aditya Aggarwal). See [NOTICE](NOTICE) and [LICENSE](LICENSE).
-Original implementation and docs are retained in `upstream/`, never executed.
+Default **OFF** for every conversation. When explicitly enabled, notify after
+**50 minutes idle**, then repeat **every minute** until user activity or OFF.
+Normal Desktop settings and its App Server connection remain unchanged.
 
-**Current Mac status (2026-11-13): installed, but automatic Desktop compaction
-is blocked.** The Desktop's live App Server is private stdio; its documented
-control/proxy socket is absent. This plugin will not load the same conversation
-in a second server, type `/compact`, or use private Desktop IPC. Hook review
-and an app restart do not resolve the missing shared-server connection.
+The current **0.2.0 alert mode** uses Codex lifecycle hooks, local persistent
+state and macOS UserNotifications. It needs no App Server connection, context
+telemetry, model call, transcript parsing or network. It does **not** compact.
+It does not claim that a prompt cache is warm or has a particular expiry.
 
-## Conversation controls
+Adapted from [the-cybersapien/claude-cache](https://github.com/the-cybersapien/claude-cache),
+Apache-2.0, by Aditya Aggarwal. [LICENSE](LICENSE) and [NOTICE](NOTICE) are retained.
+The original Claude adapter is kept under `upstream/` for reference and excluded
+from the installed runtime package.
 
-After Desktop reloads the installed skill, invoke:
+## Use in a conversation
 
-- `$codex-cache:cache on` — opt in only this conversation.
-- `$codex-cache:cache off` — cancel its timer and persist OFF.
-- `$codex-cache:cache` — status, context source, deadline, last compact and blocker.
-- `$codex-cache:cache compact` — queue one manual native compact after this turn;
-  it bypasses the idle delay and context floor, but still requires official
-  telemetry, a verified idle thread and trusted hooks. Does not opt in.
-
-The skill appears as `codex-cache:cache` in the actual `skills/list` response.
-Typing `$cache` may find it in autocomplete, but the fully qualified name above
-is the verified registered name. No custom slash command is installed.
-
-The helper uses **CODEX_THREAD_ID**, never a session picker or the session tree
-ID. Missing current-thread identity is an error. Role names, new sessions,
-forks and worker creation never enable the policy.
-
-## Policy and persistence
-
-`PLUGIN_DATA/settings.json` defaults:
-
-```json
-{"autoCompactDefault":"off","compactAfterMinutes":55,"minContextPercent":20}
+```text
+$codex-cache:cache on
+$codex-cache:cache off
+$codex-cache:cache
 ```
 
-For development, change `compactAfterMinutes` to `1` or `2` and restore `55`
-after testing. Values are reloaded while running. The safety invariant requires
-`autoCompactDefault` to remain `off`; a global ON value is rejected.
+Optional label, useful when multiple long conversations are enabled:
 
-State lives in SQLite under the officially provided `PLUGIN_DATA`, separate
-from the versioned plugin cache. For this local marketplace it resolves to
-`~/.codex/plugins/data/codex-cache-codex-cache-local/`. The helper's fallback
-matches the current Codex PluginStore; hook-provided `PLUGIN_DATA` wins.
-No prompt text, transcript contents, credentials or assistant text is stored.
+```text
+$codex-cache:cache on Lead
+```
 
-- UserPromptSubmit increments generation/activity, invalidates the deadline and
-  old context telemetry, and marks the thread running.
-- Stop/Interrupt arm the deadline only for the current user turn. Stale Stops
-  cannot arm a newer turn. First opt-in during a turn adopts its Stop identity.
-- The scheduler rechecks registry, generation, deadline, running state, exact
-  native thread ID, interactive source, parent/ephemeral flags, loaded state,
-  context and trusted/enabled plugin hooks before making a native request.
-- SQLite transactions claim one attempt per activity stretch; uncertain errors
-  or timeouts are not retried. PreCompact can veto a cancelled/stale request.
-- PostCompact and native contextCompaction items suppress further attempts until
-  a new user prompt. Manual and Codex automatic compactions also count.
-- Resume preserves opt-in and compact markers but invalidates old timers and
-  telemetry. It waits for the next turn completion before rearming.
-- No hooks for SubagentStart/SubagentStop are installed. Other hooks carrying
-  agent_id/agent_type are ignored because their session_id can be the parent's.
-- OFF path: one small Python process plus registry lookup, then no writes,
-  no scheduler startup, IPC, network or model call. An outstanding native claim
-  is the exception: its PreCompact must still be able to veto after OFF.
+Only the current `CODEX_THREAD_ID` is selected. Disposable workers, new chats
+and forks stay OFF. No role name or new-session event enables reminders.
+ON/OFF persists across restart/resume. After resume the next completed user turn
+rearms the idle timer. Sending a status message is itself activity and resets
+the wait; an in-turn `dueAt: null` is therefore normal.
 
-The scheduler runs as a detached local process only for opted-in/manual threads,
-uses flock to avoid duplicate schedulers, and exits after all are OFF. Hooks
-restart it on resume/Stop. It is not a LaunchAgent and does not keep a Mac awake.
+Additional explicit checks:
 
-## Native transport and telemetry
+```text
+$codex-cache:cache test
+$codex-cache:cache doctor
+```
 
-Only the documented Unix WebSocket transport to an **existing** App Server is used. No daemon
-bootstrap, remote-control enablement, second-server resume, UI keystrokes or
-private Desktop socket protocol is used by the runtime adapter.
+`test` sends one test notification without enabling a conversation. `doctor`
+reads the Mac notification permission; in alert mode it never connects to an
+App Server. Normal status reports `actionMode`, `enabled`, `dueAt`, `lastAlert`,
+`alertCount` and `blockedReason`. `alertCount` is a cumulative accepted-request
+count. `lastAlert.result.accepted` means macOS accepted it; Focus and notification
+settings still control whether a banner/sound is presented.
 
-Documented methods:
+The notification shows a short label or thread ID so it can be identified.
+Repeats replace that conversation's prior Notification Center entry instead of
+creating an unlimited stack. Do not use `$codex-cache:cache compact` in alert
+mode; use Desktop's own manual compaction when a reminder is useful.
 
-- initialize/initialized; thread/loaded/list; hooks/list; thread/read
-- thread/resume (only a verified already-loaded interactive root; no overrides)
-  to subscribe to token telemetry without fetching history; thread/unsubscribe when OFF
-- thread/tokenUsage/updated: `100 * last.totalTokens / modelContextWindow`
-- thread/compact/start with exactly `{"threadId": "<current opt-in ID>"}`
-- item/completed with contextCompaction as an additional completion signal
+## Setup on this Mac
 
-The context numerator and denominator are the runtime's official reported
-values, **not an independently measured exact count of the next prompt**.
-No cumulative token totals, transcript parser, character estimate or hardcoded
-window size authorizes compaction. Missing/invalid/stale usage means skip.
-The first opt-in may need another normal user turn before live telemetry is
-available; the adapter never invents it from a model name.
-
-No API in the inspected Codex protocol reports a live cache-entry expiry or a
-current warm/cold boolean. Cached-input token counts report previous request
-hits, not future warmth. The 55-minute policy is a **heuristic**, not an OpenAI
-cache TTL assertion and not a guarantee of cheaper compaction. Model/retention
-policies differ. Native compaction can itself incur model usage.
-
-Pre/PostCompact trigger distinguishes `manual` versus `auto`. API-initiated
-compaction is reported as manual too, with no caller tag. The plugin correlates
-its pending claim and turn as `plugin-request-associated`; simultaneous human
-manual requests cannot be attributed with absolute certainty. Its status says
-`attribution: correlated`, never claims an authenticated origin.
-
-The API has no atomic "compact only if turn/generation unchanged" parameter.
-Final reads, registry CAS and PreCompact reduce races but do not form a server
-transaction: a concurrent user turn can start between final read and request
-acceptance, and a PreCompact veto cannot undo preceding server task scheduling.
-Strict race-free compaction requires an additional native server precondition.
-
-## Install and review
-
-Requires macOS Desktop with Python 3.9+ and the bundled Codex CLI.
+Run from the repository:
 
 ```sh
 /usr/bin/python3 scripts/install.py
 ```
 
-Uses official `plugin marketplace add` and `plugin add`, backs up config first,
-and preserves unrelated config. The current runtime ignores bundled hooks for
-portable root `plugin.json`; this package therefore uses the officially supported
-`.codex-plugin/plugin.json` compatibility format. This was verified with the
-installed Desktop runtime rather than assumed from the latest documentation.
+The installer backs up existing Codex config, uses official marketplace/plugin
+CLI commands, creates no opted-in threads, and installs only an allowlisted
+runtime package. It builds the small native helper from `native/Alerts.swift`
+with Apple's Command Line Tools if the helper is absent:
 
-Desktop: **Settings > Hooks** (or **Review hooks** in composer), review/trust the
-seven Codex Cache hooks. Restart Desktop when convenient to reload the skill.
-**Automatic compaction remains blocked on this Mac until the Desktop's actual
-App Server offers a documented shared connection.** A separate CLI server cannot
-prove the Desktop thread idle and is not a workaround.
-
-No existing conversation is enabled by installation, including the setup chat.
-
-## Verify
-
-```sh
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest discover -s tests-codex -v
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/inspect_runtime.py
+```text
+~/Applications/Codex Cache Alerts.app
 ```
 
-The second command starts a separate **read-only diagnostic** stdio server for
-hooks/list and skills/list. It never creates, resumes or compacts a thread and
-is explicitly not a Desktop live-session test. See [VALIDATION.md](VALIDATION.md).
+No Homebrew/npm/Python package is downloaded for notifications. The helper uses
+public AppKit/UserNotifications APIs and is ad-hoc signed locally. It does not
+use AppleScript, UI key injection, private IPC or network access.
 
-## Desktop connection investigation (0.1.1)
+1. Review/trust the seven Codex Cache hooks in Desktop **Settings > Hooks** or
+   **Review hooks**. Script updates require another review under Codex's trust
+   rules. Version 0.2.0 changes the script and skill.
+2. Enable **Codex Cache Alerts** in macOS **System Settings > Notifications**.
+   The notification permission on this Mac was confirmed authorized, sound on,
+   and a native test request was present in the delivered-notification list.
+3. In each long conversation, run the `on` command. Installation leaves all OFF.
 
-All seven original hooks were confirmed trusted after the user's review. A
-subsequent isolated transport test found a 0.1.0 adapter bug: `app-server proxy`
-is a raw byte relay, not a JSONL-to-WebSocket bridge. Version 0.1.1 implements
-HTTP Upgrade plus masked WebSocket frames over a private same-user Unix socket.
-A real isolated server accepted two simultaneous clients; no model turns were
-submitted. Fragmentation, ping/pong, handshake validation and frame limits are
-covered by tests. The installed hook script change requires a new Codex review.
+The skill may require an app reload if it has not refreshed automatically.
+A hook's source/skill being discoverable is not proof it has fired for a given
+live chat; use status/lastHook after opting in to verify that separately.
 
-This fixes the adapter, **not Desktop's missing shared connection**. The current
-installed Desktop has an internal `CODEX_APP_SERVER_USE_LOCAL_DAEMON` path, but
-its normal app-tools config override prevents that branch from being selected.
-An internal WebSocket endpoint override also exists; forcing it can make the
-app's chat-management/automation connector unavailable. No environment override,
-Desktop process restart, app patch, security-check bypass or remote-login change
-was applied. See [DESKTOP-CONNECTION.md](DESKTOP-CONNECTION.md) for evidence and
-alternatives. The runtime remains OFF by default and fail-closed.
+## Settings
 
-## Sources
+The officially supplied `PLUGIN_DATA/settings.json` contains:
 
-- [Codex hooks](https://learn.chatgpt.com/docs/hooks)
-- [Plugin packaging](https://developers.openai.com/plugins/build/plugins)
-- [Codex App Server](https://learn.chatgpt.com/docs/app-server)
-- [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
-- Local generated protocol: Desktop bundled codex-cli 0.167.0-alpha.3.2;
-  separate Homebrew CLI 0.166.0 was not substituted for the Desktop runtime.
-- [Codex open source](https://github.com/openai/codex), inspected main
-  69231e119bfca0b14453515e97d99688ce1c47c9 as corroboration; installed runtime
-  discovery remains the release behavior evidence.
+```json
+{
+  "autoCompactDefault": "off",
+  "actionMode": "alert",
+  "alertAfterMinutes": 50,
+  "alertRepeatMinutes": 1,
+  "compactAfterMinutes": 55,
+  "minContextPercent": 20
+}
+```
+
+For this marketplace, data is under
+`~/.codex/plugins/data/codex-cache-codex-cache-local/`. Hook-provided PLUGIN_DATA
+is authoritative; a version-independent fallback matches the current Codex
+PluginStore. Registry state is SQLite. No prompt text or transcript contents
+are persisted. Defaults are reloaded by the scheduler. For a one-minute
+initial-delay test set `alertAfterMinutes` to `1`, then restore `50`.
+
+The compact settings are retained for the legacy experimental compact adapter;
+**alert mode does not use a context gate** because exact Desktop context usage
+is unavailable without the shared-server connection. This is a time reminder,
+not cache detection. `autoCompactDefault` must remain `off`; global ON is rejected.
+
+## Timer behavior
+
+- UserPromptSubmit updates activity, increments generation and invalidates the
+  old deadline. Stop/Interrupt arm the current turn's deadline. Stale Stop events
+  cannot arm a newer turn.
+- After 50 idle minutes, submit one native notification and set a new deadline
+  one minute later. A generation/state recheck immediately before submission
+  cancels a stale claim. OFF cancels the deadline and future repeats.
+- A native notification already being accepted can race an incoming user event;
+  future repeats are cancelled. No destructive action is involved.
+- Manual/Codex compaction observed by hooks suppresses redundant reminders until
+  the next user activity.
+- One flock-protected scheduler serves all opted-in conversations. It starts only
+  for explicit opt-ins and exits when all are OFF. No LaunchAgent, background
+  model conversation or scheduled Codex automation is created.
+- The local poll is every two seconds, so submission can be a few seconds late.
+  Sleep delays it; wake sends at most one due reminder and schedules the next
+  minute from the actual submission time. Missed reminders are never replayed.
+- OFF hooks do only ID/registry checks and exit. Child hooks carrying agent_id
+  or agent_type are ignored; no SubagentStart/SubagentStop hook is installed.
+
+## Verification
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -W error::ResourceWarning -m unittest discover -s tests-codex -v
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/smoke_alerts.py
+```
+
+The smoke test takes about two minutes and sends two real notifications, one
+minute apart. It uses a synthetic ID in a temporary registry, never opts in a
+real conversation, never invokes a model, and stops its scheduler after OFF.
+39 automated tests cover the alert policy and retained compact/transport code.
+See [VALIDATION.md](VALIDATION.md) for actual results and verification limits.
+
+## Legacy auto-compaction
+
+`actionMode: compact` retains the earlier 55-minute / official-context-20%
+adapter, but automatic native compact remains **blocked for normal Desktop
+chats on this Mac**. It is not enabled by the alert setup. The native Unix
+WebSocket adapter has an isolated two-client transport test; that does not make
+Desktop's private stdio backend shareable. No non-public Desktop startup flag,
+extra App Server or security-check bypass is installed.
+
+See [DESKTOP-CONNECTION.md](DESKTOP-CONNECTION.md) and
+[AUDIT-UPSTREAM.md](AUDIT-UPSTREAM.md) for the connection and security review.
+
+## References
+
+- [Codex hooks and trust](https://learn.chatgpt.com/docs/hooks)
+- [Codex plugin packaging](https://developers.openai.com/plugins/build/plugins)
+- [Apple notification permission](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/requestauthorization(options:completionhandler:))
+- [Apple local notification scheduling](https://developer.apple.com/documentation/usernotifications/scheduling-a-notification-locally-from-your-app)

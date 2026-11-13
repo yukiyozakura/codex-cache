@@ -1,31 +1,41 @@
 ---
 name: cache
-description: Explicitly control idle auto-compaction for THIS Codex conversation. Invoke $codex-cache:cache on, off, status, or compact. Never enable automatically based on role, task, or another conversation.
+description: Explicitly control idle reminders for THIS Codex conversation. Invoke $codex-cache:cache on, off, status, test, or doctor. Default OFF. Alerts begin after 50 minutes idle and repeat every minute until activity or OFF. Never enable based on role or another conversation.
 ---
 
-# This conversation's cache policy
+# This conversation's idle reminder
 
-Use only when explicitly invoked by the user. Parse the argument as `on`, `off`,
-`status` (also the default), or `compact`. Do not infer opt-in from Lead/Owner roles.
+Use only when explicitly invoked by the user. Parse `on`, `off`, `status`
+(default), `test`, or `doctor`. Never infer opt-in from Lead/Owner roles.
+`on` may have an optional short user-provided label, for example `on Lead`.
 
-Run the bundled helper with the shell tool, resolving `../../src/cache.py` relative
-to this SKILL.md. Example for an installed copy:
+Run the bundled helper, resolving `../../src/cache.py` relative to this SKILL.md:
 
 ```sh
-/usr/bin/python3 /absolute/plugin/root/src/cache.py on
+/usr/bin/python3 /absolute/plugin/root/src/cache.py on --label Lead
 ```
 
-The helper reads `CODEX_THREAD_ID` from the current shell environment. Never pass
-another thread ID, choose a thread from a picker, or substitute the session tree ID.
-If it is missing, stop and explain that current-thread identity is unavailable.
-If the sandbox denies access to the plugin data directory, request the normal
-shell escalation for this exact command. Do not create a second registry in the repo.
+The helper reads the current `CODEX_THREAD_ID`. Never select another thread,
+substitute the session tree ID, or use a picker. If the ID is missing, stop and
+explain that current-thread identity is unavailable. If the sandbox denies
+plugin data access, request the normal escalation for this exact command; never
+create a separate registry in the repository.
 
-Report the helper's JSON briefly, including `enabled`, `blockedReason`, and whether
-native transport/context are verified. `on` persists opt-in; it does not mean the
-Desktop App Server is reachable or compaction has succeeded. The helper never
-launches another App Server, parses transcripts, sends prompts, or types /compact.
+Default settings: actionMode=alert, autoCompactDefault=off, alertAfterMinutes=50,
+alertRepeatMinutes=1. This mode sends local Mac notifications. It never compacts,
+connects to App Server or calls a model, and it does not apply a context gate.
+Repeat notices stop/reset on user activity or OFF. Codex compaction suppresses
+redundant reminders until the next user activity. New/forked/worker threads stay
+OFF. ON/OFF persists across resume; resumed chats rearm after a turn completes.
 
-`compact` queues one manual native request for after this turn. It needs fresh
-official context telemetry and a verified idle root thread, and bypasses only
-the 55-minute delay and 20% floor. It never enables automatic compaction.
+`test` sends one native test notification without enabling the conversation.
+`doctor` reports notification permission and backend status; it does not contact
+App Server in alert mode. If `notification-permission-not-authorized` appears,
+tell the user to enable Codex Cache Alerts in macOS System Settings > Notifications.
+Do not edit the OS permission database or use AppleScript/UI automation.
+
+Report `enabled`, `actionMode`, `dueAt`, `lastAlert`, `alertCount` and
+`blockedReason` briefly. `accepted=true` means macOS accepted the request;
+Focus/notification settings may still suppress a visible banner or sound.
+Sending a status/doctor message is itself activity and restarts the idle wait.
+Do not promise exact cache expiry, warm cache detection or automatic compaction.
